@@ -8,6 +8,7 @@ import os
 import argparse
 import baselines.deepqnaf.naf as naf
 from baselines import logger
+from baselines.ddpg.util import mpi_mean, mpi_std, mpi_max, mpi_sum
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  #silence TF compilation warnings
 
 # #parser
