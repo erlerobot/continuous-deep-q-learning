@@ -9,11 +9,12 @@
 #adaptive batch size?
 #memories weighted by information/loss?
 #improved network initialisation?
-
+from baselines.deepqnaf import naf
+from baselines import logger
 import tensorflow as tf
 import numpy as np
 import random
-from tensorflow.python.ops.distributions.util import fill_lower_triangular
+from tensorflow.python.ops.distributions.util import fill_triangular
 
 class Memory:
   def __init__(self, capacity, batch_size, v):
@@ -23,8 +24,8 @@ class Memory:
     self.capacity = capacity
     self.batch_size = batch_size
     self.v = v
- 
-  def store(self,d):    
+
+  def store(self,d):
     [s,a,r,s_next,terminal] = d
     self.m.append([s,a,r,s_next,terminal])
     if self.full:
@@ -50,13 +51,13 @@ class Layer:
       self.moving_mean = tf.Variable(tf.constant(0,shape=[in_n],dtype=tf.float32), trainable=False)
       self.moving_var = tf.Variable(tf.constant(1,shape=[in_n],dtype=tf.float32), trainable=False)
       mean,var = tf.nn.moments(x, axes=[0])
-      update_mean = self.moving_mean.assign(decay*self.moving_mean + (1-decay)*mean) 
+      update_mean = self.moving_mean.assign(decay*self.moving_mean + (1-decay)*mean)
       update_var = self.moving_mean.assign(decay*self.moving_var + (1-decay)*var)
       with tf.control_dependencies([update_mean, update_var]):
         x = tf.nn.batch_normalization(x, self.moving_mean, self.moving_var, self.beta, self.gamma, variance_epsilon)
 
-    self.w = tf.Variable(tf.random_uniform([in_n,out_n],-0.1,0.1), trainable=True) 
-    self.b = tf.Variable(tf.random_uniform([out_n],-0.1,0.1), trainable=True) 
+    self.w = tf.Variable(tf.random_uniform([in_n,out_n],-0.1,0.1), trainable=True)
+    self.b = tf.Variable(tf.random_uniform([out_n],-0.1,0.1), trainable=True)
     self.z = tf.matmul(x, self.w) + self.b
 
     if activation is not None:
@@ -67,7 +68,7 @@ class Layer:
     self.variables = [self.w, self.b]
     if batch_normalize:
       self.variables += [self.gamma, self.beta, self.moving_mean, self.moving_var]
-  
+
   def construct_update(self, from_layer, tau):
     update = []
     for x,y in zip(self.variables, from_layer.variables):
@@ -85,7 +86,7 @@ class Agent:
 
     self.state_n = observation_space.shape[0]
     self.action_n = action_space.shape[0]
-    
+
     self.learning_rate = learning_rate
     self.gamma = gamma
     self.tau = tau
@@ -93,7 +94,7 @@ class Agent:
     self.resets = 0
 
     H_layer_n = hidden_n
-    H_n = hidden_size 
+    H_n = hidden_size
     M_n = int((self.action_n)*(self.action_n+1)/2)
     V_n = 1
     mu_n = self.action_n
@@ -105,12 +106,12 @@ class Agent:
     self.u = tf.placeholder(shape=[None,self.action_n], dtype=tf.float32, name="action")
     self.target = tf.placeholder(shape=[None,1], dtype=tf.float32, name="target")
 
-    self.H = Layer(self.x, H_n, activation=hidden_activation, batch_normalize=batch_normalize) 
+    self.H = Layer(self.x, H_n, activation=hidden_activation, batch_normalize=batch_normalize)
     self.t_H = Layer(self.x, H_n, activation=hidden_activation, batch_normalize=batch_normalize) #target
     self.updates = self.t_H.construct_update(self.H, self.tau)
     for i in range(1,H_layer_n):
-      self.H = Layer(self.H.h, H_n, activation=hidden_activation, batch_normalize=batch_normalize) 
-      self.t_H = Layer(self.t_H.h, H_n, activation=hidden_activation, batch_normalize=batch_normalize) #target 
+      self.H = Layer(self.H.h, H_n, activation=hidden_activation, batch_normalize=batch_normalize)
+      self.t_H = Layer(self.t_H.h, H_n, activation=hidden_activation, batch_normalize=batch_normalize) #target
       self.updates += self.t_H.construct_update(self.H, self.tau)
 
     self.V = Layer(self.H.h, V_n, batch_normalize=batch_normalize)
@@ -127,38 +128,38 @@ class Agent:
 
     else:  #original NAF covariance
       self.M = Layer(self.H.h, M_n, activation=tf.nn.tanh, batch_normalize=batch_normalize)
-      self.N = fill_lower_triangular(self.M.h)
+      self.N = fill_triangular(self.M.h)
       self.L = tf.matrix_set_diag(self.N, tf.exp(tf.matrix_diag_part(self.N)))
       self.P = tf.matmul(self.L, tf.matrix_transpose(self.L)) #original NAF covariance
 
     #self.P_inverse = tf.matrix_inverse(self.P) #precision matrix for exploration policy
-    
+
     self.D = tf.reshape(self.u - self.mu.h, [-1,1,self.action_n])
-    
+
     self.A =  (-1.0/2.0)*tf.reshape(tf.matmul(tf.matmul(self.D, self.P), tf.transpose(self.D, perm=[0,2,1])), [-1,1]) #advantage function
-    
+
     self.Q = self.A + self.V.h
     self.loss = tf.reduce_sum(tf.square(self.target - self.Q))
-    self.optimiser = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss) 
+    self.optimiser = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
 
     self.sess = tf.Session()
 
     init = tf.global_variables_initializer()
     self.sess.run(init)
-    
+
     self.saver = tf.train.Saver()
     if load_path is not None:
       self.saver.restore(self.sess, load_path)
 
- 
-  def reset(self):  #reset in between episodes (for example update epsilon), i is episode number 
+
+  def reset(self):  #reset in between episodes (for example update epsilon), i is episode number
     if self.memory.ready:
       self.resets = self.resets + 1
       i = self.resets
-     # self.epsilon = 1.0/(1+i) 
+     # self.epsilon = 1.0/(1+i)
       self.epsilon = 1.0/(1.0+0.1*i+(1.0/(i+1))*np.log(i)) #derived through black magic for inverted double pendulum
       if self.v > 1:
-        print("[Update epsilon: " + str(self.epsilon) + "]") 
+        print("[Update epsilon: " + str(self.epsilon) + "]")
     #self.epsilon = 1.0/(np.log(i+1)/np.log(3) + 0.001) #derived through black magic for inverted double pendulum 2
 
   def save(self, path):
@@ -166,7 +167,7 @@ class Agent:
 
   def get_action(self,s):
     mu = self.sess.run(self.mu.h, feed_dict={self.x:np.reshape(s,[1,-1])})[0]
-    
+
     #random action with probability epsilon
     if np.random.rand() < self.epsilon:
       action = np.random.rand(self.action_n)*2-1 #random action
@@ -177,15 +178,15 @@ class Agent:
 
  #  covariance = np.eye(self.action_n)
  #   return self.noise(mu, covariance)
-    
+
     #mu,p_inv = self.sess.run([self.mu.h,self.P_inverse],feed_dict={self.x:np.reshape(s,[1,-1])})[0]
     #return self.noise(mu, p_inv)
-  
+
   def observe(self,state,action,reward,state_next,terminal):
     self.memory.store((state,action,reward,state_next,terminal))
 
   def learn(self):
-    if self.memory.ready: 
+    if self.memory.ready:
       batch_target = []
       batch_state = []
       batch_action = []
@@ -213,9 +214,9 @@ class Agent:
     scaled_actions = []
     for a in actions:
       scaled_actions += [(a+1)*(high-low)/2+low]
-    return np.reshape(scaled_actions,[-1]) #range [low,high]  
-  
-  def get_target(self,a,r,s_next,terminal): 
+    return np.reshape(scaled_actions,[-1]) #range [low,high]
+
+  def get_target(self,a,r,s_next,terminal):
     targets = np.reshape(r,[-1,1]) + np.reshape(self.gamma*self.sess.run(self.t_V.h,feed_dict={self.x:s_next,self.u:a}),[-1,1])
     for i in range(len(terminal)):
      if terminal[i]:
@@ -229,4 +230,3 @@ class Agent:
   def update_target(self):
     for update in self.updates:
       self.sess.run(update)
-
